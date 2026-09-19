@@ -1,0 +1,29 @@
+# 运行时数据（游戏库、配置、下载的游戏）
+data/
+*.db
+*.db-wal
+*.db-shm
+
+# 下载产物的内部映射表
+.hgd_urlmap.json
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+build/
+dist/
+
+# 测试/诊断输出
+.pytest_cache/
+tools/_out/
+*.log
+
+# 编辑器
+.vscode/
+.idea/
+*.swp
+.DS_Store
+Thumbs.db
