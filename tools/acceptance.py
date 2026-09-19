@@ -224,12 +224,14 @@ def test_player():
     p._toggle_mute(); app.processEvents()
     rec("6", "再点取消静音", not p._muted, p.lbl_vol.text())
 
-    # 网页全屏
-    p._toggle_web_fullscreen(); app.processEvents()
-    rec("6", "网页全屏生效", p._web_fullscreen and p.isMaximized())
+    # 网页全屏为默认窗口状态
+    rec("6", "打开即网页全屏（最大化）", p.isMaximized(), f"state={p.windowState()}")
     rec("6", "网页全屏保留工具条", p.toolbar.isVisible())
-    p._toggle_web_fullscreen(); app.processEvents()
-    rec("6", "退出网页全屏", not p._web_fullscreen)
+    rec("6", "已移除「网页全屏」按钮", not hasattr(p, "btn_web_fs"))
+    p.showNormal(); app.processEvents()
+    rec("6", "用户可自行还原窗口", not p.isMaximized())
+    p._apply_default_window_state(); app.processEvents()
+    rec("6", "可回到默认网页全屏", p.isMaximized())
 
     # 全屏
     p._enter_fullscreen(); app.processEvents()

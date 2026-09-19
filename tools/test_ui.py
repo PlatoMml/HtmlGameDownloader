@@ -135,16 +135,18 @@ def main() -> int:
     check("再次点击取消静音", not player._muted)
     check("恢复后提示重新变静音", "取消" not in player.btn_mute.toolTip(), player.btn_mute.toolTip())
 
-    print("\n=== 5. 播放器：网页全屏（需求 6）===")
-    geo_before = player.geometry()
-    player._toggle_web_fullscreen(); app.processEvents()
-    check("进入网页全屏", player._web_fullscreen)
+    print("\n=== 5. 播放器：网页全屏为默认状态（需求 6）===")
+    check("打开即网页全屏（最大化窗口）", player.isMaximized(),
+          f"state={player.windowState()}")
     check("网页全屏保留工具条", player.toolbar.isVisible())
-    check("按钮文案切换", "退出" in player.btn_web_fs.text(), player.btn_web_fs.text())
-    player._toggle_web_fullscreen(); app.processEvents()
-    check("退出网页全屏", not player._web_fullscreen)
-    check("还原窗口几何", player.geometry().size() == geo_before.size(),
-          f"{player.geometry().size()} vs {geo_before.size()}")
+    check("已移除「网页全屏」按钮", not hasattr(player, "btn_web_fs"))
+    check("工具条保留全屏按钮", player.btn_fs.text() in ("全屏", "退出全屏"),
+          player.btn_fs.text())
+    # 网页全屏是默认状态，但仍是普通窗口，用户可自行缩放/还原
+    player.showNormal(); app.processEvents()
+    check("用户可还原为普通窗口", not player.isMaximized())
+    player._apply_default_window_state(); app.processEvents()
+    check("可恢复默认网页全屏", player.isMaximized())
 
     print("\n=== 6. 播放器：全屏 + ESC（需求 6）===")
     player._enter_fullscreen(); app.processEvents()

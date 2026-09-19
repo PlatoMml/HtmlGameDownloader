@@ -3,8 +3,9 @@
 需求要点（逐条对应）：
 - 音量拖动条，默认 30%                                    -> _build_toolbar
 - 拖动条左侧小喇叭，点击静音（再点恢复）                  -> _toggle_mute
-- 网页全屏：保留工具条与窗口外壳，游戏在窗口内保持比例铺满 -> _toggle_web_fullscreen
-- 全屏：铺满显示器、隐藏工具条、鼠标移到顶部不弹出遮挡、ESC 返回 -> _enter_fullscreen / keyPressEvent
+- 网页全屏为默认窗口状态：打开游戏即最大化（保留工具条与
+  窗口外壳），游戏在窗口内保持比例铺满；用户仍可自己拖动缩放 -> _apply_default_window_state
+- 全屏：铺满显示器、隐藏工具条、鼠标移到顶部不弹出遮挡、ESC 返回网页全屏 -> _enter_fullscreen
 """
 from __future__ import annotations
 
@@ -48,19 +49,42 @@ class GamePlayer(QMainWindow):
     def __init__(self, game: Game, parent=None):
         super().__init__(parent)
         self.game = game
-        self._web_fullscreen = False
         self._fullscreen = False
         self._muted = bool(config.get("muted"))
         self._volume = int(config.get("default_volume") or 30)
         self._server = None
         self._profile = None
-        self._saved_geo = None
 
         self.setWindowTitle(f"{game.name} — 网页游戏下载器")
         self.resize(1024, 640)
         self._build_ui()
+        # 网页全屏即默认状态：打开游戏就是最大化的带工具条窗口
+        self._apply_default_window_state()
         self._load_game()
         self._apply_volume()
+
+    # ------------------------------------------------------------ 窗口状态
+
+    def _apply_default_window_state(self) -> None:
+        """默认窗口状态 = 网页全屏。
+
+        网页全屏的定义：保留工具条与窗口外壳，游戏在窗口内保持比例铺满。
+        表现为最大化窗口，但仍是普通窗口（用户可自行拖动缩放或还原）。
+        """
+        self.setWindowState(self.windowState() | Qt.WindowMaximized)
+
+    def _return_to_web_fullscreen(self) -> None:
+        """从全屏返回网页全屏状态。"""
+        self.showNormal()               # 先退出全屏态
+        self._apply_default_window_state()
+        self.toolbar.show()
+        if self.menuBar():
+            self.menuBar().show()
+        if self.statusBar():
+            self.statusBar().show()
+        self.setContextMenuPolicy(Qt.DefaultContextMenu)
+        self.btn_fs.setText("全屏")
+        QTimer.singleShot(180, self._refit)
 
     # ------------------------------------------------------------ UI
 
@@ -101,15 +125,9 @@ class GamePlayer(QMainWindow):
         self.lbl_title.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
         tb.addWidget(self.lbl_title)
 
-        self.btn_web_fs = QPushButton("网页全屏")
-        self.btn_web_fs.setStyleSheet(button_style(primary=False))
-        self.btn_web_fs.setToolTip("保留工具条，游戏在窗口内保持比例铺满")
-        self.btn_web_fs.clicked.connect(self._toggle_web_fullscreen)
-        tb.addWidget(self.btn_web_fs)
-
         self.btn_fs = QPushButton("全屏")
         self.btn_fs.setStyleSheet(button_style(primary=False))
-        self.btn_fs.setToolTip("铺满显示器，隐藏工具条，ESC 退出")
+        self.btn_fs.setToolTip("铺满显示器，隐藏工具条，ESC 返回")
         self.btn_fs.clicked.connect(self._enter_fullscreen)
         tb.addWidget(self.btn_fs)
 
@@ -413,33 +431,11 @@ class GamePlayer(QMainWindow):
 
     # ------------------------------------------------------------ 全屏
 
-    def _toggle_web_fullscreen(self) -> None:
-        """网页全屏：保留工具条，游戏区域扩展到整个窗口客户区并保持比例。
-
-        实现：把窗口中央部件里的舞台提升为顶层覆盖层（不隐藏工具条），
-        舞台内部由 index.html 的 fit() 按比例铺满。
-        """
-        self._web_fullscreen = not self._web_fullscreen
-        if self._web_fullscreen:
-            # 记住原本的窗口几何，退出时还原
-            self._saved_geo = self.geometry()
-            self.toolbar.setVisible(True)   # 需求明确：网页全屏保留工具条
-            self.showMaximized()
-            self.btn_web_fs.setText("退出网页全屏")
-        else:
-            if hasattr(self, "_saved_geo"):
-                self.setGeometry(self._saved_geo)
-            self.showNormal()
-            self.btn_web_fs.setText("网页全屏")
-        # 让页面重新计算贴合尺寸
-        QTimer.singleShot(150, self._refit)
-
     def _enter_fullscreen(self) -> None:
-        """全屏：铺满显示器，隐藏一切工具条，鼠标移顶部不弹出，ESC 退出。"""
+        """全屏：铺满显示器，隐藏一切工具条，鼠标移顶部不弹出，ESC 返回网页全屏。"""
         if self._fullscreen:
             return
         self._fullscreen = True
-        self._saved_geo = self.geometry()
         # 关键：必须先隐藏工具条/菜单/状态栏，再 showFullScreen，
         # 否则 Qt 会在全屏时仍为主窗口部件留出边框/工具条空间。
         if self.menuBar():
@@ -449,26 +445,17 @@ class GamePlayer(QMainWindow):
             self.statusBar().hide()
         self.setContentsMargins(0, 0, 0, 0)
         self.showFullScreen()
-        # 阻止鼠标移到屏幕顶部时弹出任何东西：无工具条 + 禁用快捷键上下文菜单
+        # 阻止鼠标移到屏幕顶部时弹出任何东西：无工具条 + 禁用上下文菜单
         self.setContextMenuPolicy(Qt.NoContextMenu)
+        self.btn_fs.setText("退出全屏")
         QTimer.singleShot(200, self._refit)
 
     def _exit_fullscreen(self) -> None:
+        """退出全屏，回到默认的网页全屏窗口状态。"""
         if not self._fullscreen:
-            # 非全屏时 ESC 先退出"网页全屏"
-            if self._web_fullscreen:
-                self._toggle_web_fullscreen()
             return
         self._fullscreen = False
-        self.showNormal()
-        self.toolbar.show()
-        if self.menuBar():
-            self.menuBar().show()
-        self.setContextMenuPolicy(Qt.DefaultContextMenu)
-        if hasattr(self, "_saved_geo"):
-            self.setGeometry(self._saved_geo)
-        self.btn_fs.setText("全屏")
-        QTimer.singleShot(200, self._refit)
+        self._return_to_web_fullscreen()
 
     def keyPressEvent(self, event):
         if event.key() == Qt.Key_Escape:

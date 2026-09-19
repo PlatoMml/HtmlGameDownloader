@@ -40,7 +40,7 @@ _WRAPPER_HTML = """<!doctype html>
 <meta name="viewport" content="width=device-width,initial-scale=1,user-scalable=no">
 <title>{title}</title>
 <style>
-  html,body{{margin:0;padding:0;width:100%;height:100%;overflow:hidden;background:#0b0b0f;}}
+  html,body{{margin:0;padding:0;width:100%;height:100%;overflow:hidden;background:#000;}}
   /* 用固定定位四边贴齐，保证 stage 永远等于视口大小 */
   #stage{{position:fixed;left:0;top:0;right:0;bottom:0;overflow:hidden;}}
   #frame{{border:0;display:block;position:absolute;left:50%;top:50%;
@@ -109,7 +109,7 @@ _FLASH_HTML = """<!doctype html>
 <meta charset="utf-8">
 <title>{title}</title>
 <style>
-  html,body{{margin:0;padding:0;width:100%;height:100%;overflow:hidden;background:#0b0b0f;}}
+  html,body{{margin:0;padding:0;width:100%;height:100%;overflow:hidden;background:#000;}}
   #stage{{position:fixed;left:0;top:0;right:0;bottom:0;overflow:hidden;}}
   #ruffle{{position:absolute;left:50%;top:50%;transform:translate(-50%,-50%);}}
 </style>
