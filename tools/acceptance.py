@@ -358,6 +358,92 @@ def test_mcp():
 
 # ---------------------------------------------------------------- 附加
 
+def test_saves_and_restart():
+    sec("需求 8：游戏存档与重玩")
+    from hgd.core import saves
+    from hgd.models import Game
+
+    tmp = tempfile.mkdtemp(prefix="acc_save_")
+    g = Game(id=8001, name="存档测试", local_path=os.path.join(tmp, "g"))
+
+    # 存档基础能力
+    check_ok = saves.current_gen(g) == 1
+    rec("8", "初始存档代际为 1", check_ok, f"gen={saves.current_gen(g)}")
+    rec("8", "无存档时判定正确", not saves.save_exists(g))
+
+    d = saves.save_dir(g)
+    d.mkdir(parents=True, exist_ok=True)
+    (d / "data.db").write_bytes(b"x" * 2048)
+    rec("8", "有存档时判定正确", saves.save_exists(g))
+    rec("8", "统计存档占用", saves.save_size(g) > 0, f"{saves.save_size(g)} B")
+
+    # 重玩 = 切换到全新代际
+    ok, msg = saves.clear_save(g)
+    rec("8", "重玩重置存档成功", ok, msg)
+    rec("8", "重置后进入新代际", saves.current_gen(g) == 2,
+        f"gen={saves.current_gen(g)}")
+    rec("8", "新代际为空白（全新存档）", not saves.save_exists(g))
+
+    # 端口稳定（存档能读回的前提）
+    p1 = saves.port_for(g)
+    p2 = saves.port_for(Game(id=8001, name="存档测试", local_path=os.path.join(tmp, "g")))
+    rec("8", "端口按游戏固定（存档可续接）", p1 == p2, f"{p1} == {p2}")
+    other = saves.port_for(Game(id=8002, name="另一个", local_path=os.path.join(tmp, "h")))
+    rec("8", "不同游戏端口互不冲突", other != p1, f"{p1} vs {other}")
+
+    # 重玩按钮与二次确认（UI 层）
+    try:
+        from PySide6.QtWidgets import QApplication, QDialog, QCheckBox, QPushButton, QLabel
+        app = QApplication.instance() or QApplication(sys.argv)
+        from hgd.ui.player import GamePlayer
+        gdir = os.path.join(tmp, "playable")
+        os.makedirs(gdir, exist_ok=True)
+        with open(os.path.join(gdir, "index.html"), "w", encoding="utf-8") as f:
+            f.write("<html><body>t</body></html>")
+        gp = Game(id=8003, name="按钮测试", local_path=gdir,
+                  entry_file="index.html", engine="html")
+        pl = GamePlayer(gp)
+        pl.show()
+        app.processEvents()
+        rec("8", "播放器提供重玩按钮", hasattr(pl, "btn_restart")
+            and pl.btn_restart.text() == "重玩", pl.btn_restart.text() if hasattr(pl, "btn_restart") else "")
+
+        holder = {}
+        real_exec = QDialog.exec
+
+        def cap(self):
+            holder["dlg"] = self
+            return QDialog.Rejected
+
+        QDialog.exec = cap
+        try:
+            pl._confirm_restart()
+        finally:
+            QDialog.exec = real_exec
+
+        dlg = holder.get("dlg")
+        if dlg:
+            labels = " ".join(w.text() for w in dlg.findChildren(QLabel))
+            btns = [b.text() for b in dlg.findChildren(QPushButton)]
+            chks = dlg.findChildren(QCheckBox)
+            rec("8", "重玩需二次确认（勾选）", len(chks) == 1, str([c.text() for c in chks]))
+            rec("8", "确认框说明不可恢复",
+                ("无法恢复" in labels or "永久丢失" in labels))
+            ok_btns = [b for b in dlg.findChildren(QPushButton) if "清除存档" in b.text()]
+            if ok_btns and chks:
+                rec("8", "未勾选时禁止执行", not ok_btns[0].isEnabled())
+            else:
+                rec("8", "未勾选时禁止执行", False, "未找到按钮或勾选框")
+        else:
+            rec("8", "重玩弹出确认对话框", False, "未捕获到对话框")
+        pl.close()
+        app.processEvents()
+    except Exception as e:
+        rec("8", "重玩 UI 检查", False, f"{type(e).__name__}: {e}")
+
+    shutil.rmtree(tmp, ignore_errors=True)
+
+
 def test_extra():
     sec("附加：健壮性与边界")
     from hgd.core.mirror import safe_filename, url_to_local_rel
@@ -410,7 +496,7 @@ def main() -> int:
     print(f"数据沙箱: {_SANDBOX}  (不会影响你的真实游戏库)")
 
     for fn in (test_identify, test_name_editable, test_custom_dir, test_favorites,
-               test_scan, test_player, test_mcp, test_extra):
+               test_scan, test_player, test_saves_and_restart, test_mcp, test_extra):
         try:
             fn()
         except Exception as e:

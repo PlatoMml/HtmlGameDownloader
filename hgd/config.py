@@ -52,9 +52,13 @@ CONFIG_PATH = DATA_DIR / "config.json"
 # 内置下载的默认落盘目录（用户可改）
 DEFAULT_DOWNLOAD_DIR = DATA_DIR / "games"
 
+# 游戏存档：每个游戏一个独立的浏览器存储 profile。
+# 之所以必须落在项目目录内、且每游戏一份，见 core/saves.py 的说明。
+SAVES_DIR = DATA_DIR / "saves"
+
 
 def ensure_dirs() -> None:
-    for d in (DATA_DIR, DEFAULT_DOWNLOAD_DIR):
+    for d in (DATA_DIR, DEFAULT_DOWNLOAD_DIR, SAVES_DIR):
         d.mkdir(parents=True, exist_ok=True)
 
 

@@ -16,17 +16,28 @@ from typing import Optional
 
 from PySide6.QtCore import Qt, QUrl, QTimer, Signal, QSize
 from PySide6.QtGui import QAction, QKeySequence, QShortcut, QIcon
-from PySide6.QtWebEngineCore import QWebEngineSettings
+from PySide6.QtWebEngineCore import QWebEnginePage, QWebEngineSettings
 from PySide6.QtWebEngineWidgets import QWebEngineView
 from PySide6.QtWidgets import (
     QFrame, QHBoxLayout, QLabel, QMainWindow, QPushButton, QSlider, QSizePolicy,
-    QVBoxLayout, QWidget, QMessageBox,
+    QVBoxLayout, QWidget, QMessageBox, QStatusBar, QDialog, QCheckBox,
 )
 
 from ..config import config
 from ..models import Game
 from .bridge import VolumeBridge
-from .theme import ACCENT, SURFACE, TEXT_MUTED, button_style, speaker_icon, toolbar_style
+from .theme import (
+    ACCENT, SURFACE, TEXT, TEXT_MUTED, button_style, speaker_icon, toolbar_style,
+)
+
+
+def _human_size(n: int) -> str:
+    """字节数转可读文本。"""
+    for unit in ("B", "KB", "MB", "GB"):
+        if n < 1024 or unit == "GB":
+            return f"{n:.0f} {unit}" if unit == "B" else f"{n:.1f} {unit}"
+        n /= 1024.0
+    return f"{n:.1f} GB"
 
 
 class GamePlayer(QMainWindow):
@@ -42,6 +53,8 @@ class GamePlayer(QMainWindow):
         self._muted = bool(config.get("muted"))
         self._volume = int(config.get("default_volume") or 30)
         self._server = None
+        self._profile = None
+        self._saved_geo = None
 
         self.setWindowTitle(f"{game.name} — 网页游戏下载器")
         self.resize(1024, 640)
@@ -100,6 +113,12 @@ class GamePlayer(QMainWindow):
         self.btn_fs.clicked.connect(self._enter_fullscreen)
         tb.addWidget(self.btn_fs)
 
+        self.btn_restart = QPushButton("重玩")
+        self.btn_restart.setStyleSheet(button_style(primary=False))
+        self.btn_restart.setToolTip("清除本游戏的存档，从头开始")
+        self.btn_restart.clicked.connect(self._confirm_restart)
+        tb.addWidget(self.btn_restart)
+
         self.btn_reload = QPushButton("刷新")
         self.btn_reload.setStyleSheet(button_style(primary=False))
         self.btn_reload.clicked.connect(self.view.reload if hasattr(self, "view") else lambda: None)
@@ -111,6 +130,11 @@ class GamePlayer(QMainWindow):
         self._enable_web_settings()
         self.bridge = VolumeBridge(self.view)
         self.bridge.attach()
+
+        # 状态栏：显示"存档已重置"之类的操作反馈
+        self.setStatusBar(QStatusBar())
+        self.statusBar().setStyleSheet(
+            f"QStatusBar{{background:{SURFACE};color:{TEXT_MUTED};font-size:12px;}}")
 
         # 布局：工具条 + 舞台
         self.stage = QWidget()
@@ -154,7 +178,13 @@ class GamePlayer(QMainWindow):
     # ------------------------------------------------------------ 载入
 
     def _load_game(self) -> None:
-        """优先用本地镜像服务打开（相对引用与懒补漏都需要 HTTP 源）。"""
+        """载入游戏。
+
+        使用「每游戏独立的持久化 profile + 稳定端口」，让存档能跨会话保留：
+        - 端口稳定 -> 源不变 -> 浏览器能找回该游戏的旧存档
+        - 独立 profile -> 不同游戏的存档互不干扰
+        """
+        from ..core import saves
         from ..core.mirror_server import MirrorServer
         from ..core.mirror import Downloader
         from urllib.parse import urlparse
@@ -168,7 +198,8 @@ class GamePlayer(QMainWindow):
         meta_path = os.path.join(folder, "game_meta.json")
         if os.path.exists(meta_path):
             try:
-                meta = json.load(open(meta_path, encoding="utf-8"))
+                with open(meta_path, encoding="utf-8") as f:
+                    meta = json.load(f)
                 eu = meta.get("entry_url", "")
                 if eu:
                     p = urlparse(eu)
@@ -184,7 +215,9 @@ class GamePlayer(QMainWindow):
                 lazy=True,
             )
             try:
-                self._server.start()
+                # 固定端口：这是存档能在下次打开时被读到的前提
+                port = saves.port_for(self.game)
+                self._server.start(preferred=port)
                 rel = os.path.relpath(entry_path, folder).replace("\\", "/")
                 url = self._server.url_for(rel)
             except Exception:
@@ -192,7 +225,83 @@ class GamePlayer(QMainWindow):
         else:
             url = QUrl.fromLocalFile(entry_path).toString()
 
+        # 持久化 profile：让 localStorage / IndexedDB / Cookie 落到磁盘
+        self._setup_profile()
         self.view.setUrl(QUrl(url))
+
+    def _setup_profile(self) -> None:
+        """为该游戏建立独立的持久化存储 profile。
+
+        存储目录 = data/saves/<游戏标识>/gen<N>/
+        每个游戏一份，互不干扰；重玩时切换到 gen<N+1> 拿到全新存档。
+        """
+        from ..core import saves
+        from PySide6.QtWebEngineCore import QWebEngineProfile
+
+        try:
+            # 顺带清理上一轮遗留的旧代际（句柄此时应已释放）
+            try:
+                saves.purge_pending(self.game)
+            except Exception:
+                pass
+
+            sdir = saves.save_dir(self.game)
+            sdir.mkdir(parents=True, exist_ok=True)
+            profile = QWebEngineProfile(saves.profile_name(self.game), self)
+            profile.setPersistentStoragePath(str(sdir))
+            profile.setCachePath(str(sdir / "_cache"))
+            profile.setPersistentCookiesPolicy(
+                QWebEngineProfile.PersistentCookiesPolicy.ForcePersistentCookies)
+            self._profile = profile
+            self.view.setPage(QWebEnginePage(profile, self.view))
+            self._enable_web_settings()
+        except Exception:
+            # profile 建立失败不应阻断游玩，退回默认页面
+            self._profile = None
+
+    def _teardown_profile(self) -> None:
+        """释放 profile 与其页面，确保 leveldb 句柄被关闭。
+
+        清档前必须调用：否则文件被占用，删除会失败或残留脏数据。
+        """
+        try:
+            if self.view.page():
+                self.view.setPage(None)
+        except Exception:
+            pass
+        try:
+            if self._profile:
+                self._profile.deleteLater()
+        except Exception:
+            pass
+        self._profile = None
+
+    def _restart_fresh(self) -> None:
+        """重玩：切换到全新存档代际后重新载入游戏。"""
+        from ..core import saves
+
+        # 1) 先释放 profile 与页面，减少对旧存档目录的占用
+        self._teardown_profile()
+        if self._server:
+            try:
+                self._server.stop()
+            except Exception:
+                pass
+            self._server = None
+
+        # 2) 切换存档代际（不直接删正在使用的目录，避免文件锁与半删状态）
+        ok, msg = saves.clear_save(self.game)
+
+        # 3) 稍作延迟让 Qt 回收资源，再以新代际载入
+        QTimer.singleShot(220, lambda: self._after_clear(ok, msg))
+
+    def _after_clear(self, ok: bool, msg: str) -> None:
+        self._load_game()
+        self._apply_volume()
+        if ok:
+            self.statusBar().showMessage("存档已重置，已从新的存档开始", 6000)
+        else:
+            QMessageBox.warning(self, "重玩失败", msg)
 
     def closeEvent(self, event):
         try:
@@ -200,8 +309,87 @@ class GamePlayer(QMainWindow):
                 self._server.stop()
         except Exception:
             pass
+        # 释放 profile，让存档内容完整落盘
+        try:
+            if self.view.page():
+                self.view.setPage(None)
+        except Exception:
+            pass
+        try:
+            if self._profile:
+                self._profile.deleteLater()
+        except Exception:
+            pass
         self.closed.emit(self.game.id or 0)
         super().closeEvent(event)
+
+    # ------------------------------------------------------------ 重玩
+
+    def _confirm_restart(self) -> None:
+        """重玩：二次确认后清除本游戏存档。
+
+        采用「勾选确认」式二次确认：必须先勾选"我已知晓"，
+        "清除存档并重玩"按钮才会启用。比连弹两个对话框清晰，
+        也不会让人能一路回车误删进度。
+        """
+        from ..core import saves
+
+        has_save = saves.save_exists(self.game)
+        size = saves.save_size(self.game)
+
+        dlg = QDialog(self)
+        dlg.setWindowTitle("重玩")
+        dlg.setMinimumWidth(430)
+        dlg.setStyleSheet(f"""
+            QDialog {{ background:{SURFACE}; }}
+            QLabel {{ color:{TEXT}; }}
+            QCheckBox {{ color:{TEXT}; }}
+        """)
+        lay = QVBoxLayout(dlg)
+        lay.setContentsMargins(20, 18, 20, 16)
+        lay.setSpacing(12)
+
+        title = QLabel(f"要重新开始《{self.game.name}》吗？")
+        title.setStyleSheet(f"color:{ACCENT};font-size:15px;font-weight:600;")
+        lay.addWidget(title)
+
+        if has_save:
+            desc = (f"将清除本游戏的全部存档数据（约 {_human_size(size)}），"
+                    "包括游戏进度、设置与缓存。\n\n"
+                    "清除后无法恢复，游戏会从全新的存档开始。")
+        else:
+            desc = ("当前没有检测到存档数据。\n\n"
+                    "继续会重新载入游戏，并清除可能存在的临时数据。")
+        body = QLabel(desc)
+        body.setWordWrap(True)
+        body.setStyleSheet(f"color:{TEXT_MUTED};font-size:13px;")
+        lay.addWidget(body)
+
+        chk = QCheckBox("我已了解进度将永久丢失")
+        lay.addWidget(chk)
+
+        row = QHBoxLayout()
+        row.addStretch(1)
+        btn_cancel = QPushButton("取消")
+        btn_cancel.setStyleSheet(button_style(primary=False))
+        btn_cancel.clicked.connect(dlg.reject)
+        row.addWidget(btn_cancel)
+
+        btn_ok = QPushButton("清除存档并重玩")
+        btn_ok.setStyleSheet(button_style())
+        btn_ok.setEnabled(False)          # 必须先勾选
+        btn_ok.clicked.connect(dlg.accept)
+        row.addWidget(btn_ok)
+        lay.addLayout(row)
+
+        chk.toggled.connect(btn_ok.setEnabled)
+        btn_cancel.setDefault(True)
+
+        if dlg.exec() != QDialog.Accepted or not chk.isChecked():
+            return
+
+        self.statusBar().showMessage("正在重置存档…")
+        QTimer.singleShot(60, self._restart_fresh)
 
     # ------------------------------------------------------------ 音量
 

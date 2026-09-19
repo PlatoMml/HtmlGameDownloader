@@ -20,7 +20,7 @@ from PySide6.QtWidgets import (
     QCheckBox, QSpinBox, QFormLayout,
 )
 
-from ..config import config
+from ..config import config, SAVES_DIR
 from ..core.db import (
     add_game, categories, get_game, init_db, list_games, rename_category,
     update_game, delete_game, is_available, find_missing, prune_missing,
@@ -99,6 +99,7 @@ class MainWindow(QMainWindow):
         self._build_ui()
         self._refresh_library()
         self._refresh_favorites()
+        self._refresh_save_info()
 
     # ============================================================ UI
 
@@ -370,6 +371,25 @@ class MainWindow(QMainWindow):
         self.set_depth.setRange(1, 6)
         self.set_depth.setValue(int(config.get("max_depth")))
         form.addRow("递归深度", self.set_depth)
+
+        # ---- 存档管理 ----
+        self.lbl_saves = QLabel("")
+        self.lbl_saves.setStyleSheet(f"color:{TEXT_MUTED};font-size:12px;")
+        save_row = QHBoxLayout()
+        save_row.addWidget(self.lbl_saves, 1)
+        btn_save_open = QPushButton("打开存档目录")
+        btn_save_open.setStyleSheet(button_style(primary=False))
+        btn_save_open.clicked.connect(self._open_saves_dir)
+        save_row.addWidget(btn_save_open)
+        btn_save_clear = QPushButton("清空全部存档")
+        btn_save_clear.setStyleSheet(button_style(primary=False))
+        btn_save_clear.setToolTip("清除所有游戏的进度数据，不可恢复")
+        btn_save_clear.clicked.connect(self._clear_all_saves)
+        save_row.addWidget(btn_save_clear)
+        save_w = QWidget()
+        save_w.setLayout(save_row)
+        form.addRow("游戏存档", save_w)
+
         lay.addLayout(form)
 
         row2 = QHBoxLayout()
@@ -784,6 +804,49 @@ class MainWindow(QMainWindow):
         self._refresh_library()
         self._refresh_favorites()
         self.statusBar().showMessage(f"已清理 {n} 条失效记录")
+
+    def _open_saves_dir(self) -> None:
+        SAVES_DIR.mkdir(parents=True, exist_ok=True)
+        try:
+            os.startfile(str(SAVES_DIR))
+        except Exception as e:
+            QMessageBox.warning(self, "打不开", str(e))
+
+    def _refresh_save_info(self) -> None:
+        """刷新设置页的存档占用显示。"""
+        from ..core import saves
+        try:
+            n = len([d for d in os.listdir(SAVES_DIR) if os.path.isdir(SAVES_DIR / d)]) \
+                if SAVES_DIR.exists() else 0
+            size = saves.all_save_size()
+            self.lbl_saves.setText(
+                f"{n} 个游戏有存档记录，共占用 {size / 1024 / 1024:.1f} MB")
+        except Exception:
+            self.lbl_saves.setText("")
+
+    def _clear_all_saves(self) -> None:
+        """清空所有游戏的存档（二次确认）。"""
+        from ..core import saves
+        box = QMessageBox(self)
+        box.setIcon(QMessageBox.Warning)
+        box.setWindowTitle("清空全部存档")
+        box.setText("要清除所有游戏的存档吗？")
+        box.setInformativeText(
+            "所有游戏的进度、设置与缓存都会被删除，且无法恢复。\n"
+            "游戏文件本身不受影响，可以重新开始玩。"
+        )
+        b_yes = box.addButton("全部清除", QMessageBox.DestructiveRole)
+        b_no = box.addButton("取消", QMessageBox.RejectRole)
+        box.setDefaultButton(b_no)
+        box.exec()
+        if box.clickedButton() is not b_yes:
+            return
+        ok, fail = saves.clear_all_saves()
+        self._refresh_save_info()
+        msg = f"已清除 {ok} 个游戏的存档"
+        if fail:
+            msg += f"，{fail} 个因文件占用未能清除（关闭对应游戏后重试）"
+        self.statusBar().showMessage(msg, 8000)
 
     def _new_category(self) -> None:
         name, ok = QInputDialog.getText(self, "新建分类", "分类名：")

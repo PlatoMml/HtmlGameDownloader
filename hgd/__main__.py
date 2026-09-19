@@ -26,6 +26,15 @@ def main(argv=None) -> int:
 
     ensure_dirs()
 
+    # 清理上轮遗留的旧存档代际（重玩时因文件被占用未能立即删除的）
+    try:
+        from .core import saves
+        n = saves.purge_all_pending()
+        if n:
+            print(f"[saves] 已清理 {n} 份过期存档")
+    except Exception:
+        pass
+
     # 高分屏支持（Qt6 默认已较好，这里显式兜底）
     os.environ.setdefault("QT_ENABLE_HIGHDPI_SCALING", "1")
 
