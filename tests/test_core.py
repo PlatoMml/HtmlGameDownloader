@@ -267,7 +267,58 @@ class TestBinarySafety(unittest.TestCase):
         shutil.rmtree(d, ignore_errors=True)
 
 
-class TestCleanName(unittest.TestCase):
+class TestLauncherScripts(unittest.TestCase):
+    """回归：批处理脚本必须保持纯 ASCII。
+
+    实测事故：run.bat 里写了 UTF-8 中文 + chcp 65001，
+    但 cmd.exe 以 OEM 代码页（zh-CN 是 GBK）解析 .bat 字节，
+    导致中文行被当成命令执行、脚本瞬间退出 —— 用户双击无任何反应。
+
+    chcp 只改控制台输出代码页，不改解析代码页，所以中文提示必须交给
+    Python 侧输出，脚本本身只能有 ASCII。
+    """
+
+    ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+    def test_bat_files_are_ascii(self):
+        bad = []
+        for root, _dirs, files in os.walk(self.ROOT):
+            if os.sep + ".git" in root:
+                continue
+            for f in files:
+                if f.endswith((".bat", ".cmd")):
+                    p = os.path.join(root, f)
+                    raw = open(p, "rb").read()
+                    n = sum(1 for b in raw if b > 127)
+                    if n:
+                        bad.append((os.path.relpath(p, self.ROOT), n))
+        self.assertEqual(bad, [], f"批处理脚本含非 ASCII 字节，双击可能闪退: {bad}")
+
+    def test_run_bat_has_expected_flow(self):
+        p = os.path.join(self.ROOT, "run.bat")
+        self.assertTrue(os.path.exists(p), "run.bat 缺失")
+        txt = open(p, "r", encoding="ascii", errors="strict").read()
+        # 关键要素
+        self.assertIn("python -m hgd", txt)
+        self.assertIn("pause", txt.lower(), "出错时应 pause 以便用户看到原因")
+        self.assertIn("where python", txt.lower())
+        # 不应残留会与 GBK 解析冲突的 chcp 指令（注释里提到它是允许的）
+        for line in txt.splitlines():
+            stripped = line.strip()
+            if stripped.lower().startswith("rem"):
+                continue
+            self.assertNotIn("chcp", stripped.lower(),
+                             f"不应切换代码页（注释除外）: {stripped!r}")
+
+    def test_run_sh_exists(self):
+        p = os.path.join(self.ROOT, "run.sh")
+        self.assertTrue(os.path.exists(p))
+        txt = open(p, "r", encoding="utf-8").read()
+        self.assertIn("python3", txt)
+        self.assertIn("exec", txt)
+
+
+
     """站点标题清洗（实测样本）。"""
 
     def _c(self, s):

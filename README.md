@@ -125,13 +125,19 @@ tests/                 单元测试
 ## 测试
 
 ```bash
-# 单元测试（离线，29 项）
+# 单元测试（离线，32 项）
 python tests/test_core.py
+
+# 启动验证（模拟双击 run.bat，确认主窗口真的显示出来）
+python tools/test_launch.py
 
 # UI 端到端（41 项：收藏/分类/扫描/音量/静音/全屏/ESC/MCP/设置持久化）
 python tools/test_ui.py
 
-# 真实游戏运行验证（需要先下载游戏）
+# 需求逐条验收（66 项，需要联网与已下载的测试游戏）
+python tools/acceptance.py
+
+# 真实游戏运行验证
 python tools/verify_game.py "<游戏目录>" --seconds 90
 
 # Flash 链路验证
@@ -140,6 +146,15 @@ python tools/test_flash.py
 # GUI 截图测试
 python tools/test_gui.py
 ```
+
+### 关于启动脚本
+
+`run.bat` / `run.sh` 内部**只使用 ASCII**。
+
+原因：cmd.exe 用系统 OEM 代码页（简体中文 Windows 是 GBK）解析 `.bat` 文件的字节，
+而 `chcp 65001` 只改变控制台输出代码页、不改变解析代码页。
+如果批处理里写了 UTF-8 中文，中文行会被当作命令执行，脚本瞬间退出 ——
+表现为**双击毫无反应**。所以中文提示一律由 Python 侧输出。
 
 ---
 
