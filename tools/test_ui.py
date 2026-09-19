@@ -17,6 +17,9 @@ import sys
 import tempfile
 import time
 
+# 隔离数据目录：测试绝不写入用户的真实游戏库
+os.environ.setdefault("HGD_DATA_DIR",
+                      os.path.join(tempfile.gettempdir(), "hgd_testdata_" + str(os.getpid())))
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 os.environ["QTWEBENGINE_CHROMIUM_FLAGS"] = (
     "--no-sandbox --enable-unsafe-swiftshader --use-gl=angle --use-angle=swiftshader "
@@ -38,18 +41,14 @@ def check(name: str, cond: bool, detail: str = ""):
 def main() -> int:
     app = QApplication(sys.argv)
 
-    # 用独立的临时 data 目录，避免污染真实库
+    # 数据目录已由文件顶部的 HGD_DATA_DIR 环境变量隔离，这里只需确保目录存在
     import hgd.config as cfg
-    tmp = tempfile.mkdtemp(prefix="hgd_ui_")
     from pathlib import Path
-    cfg.DATA_DIR = Path(tmp)
-    cfg.DB_PATH = Path(tmp) / "library.db"
-    cfg.CONFIG_PATH = Path(tmp) / "config.json"
-    cfg.DEFAULT_DOWNLOAD_DIR = Path(tmp) / "games"
+    tmp = str(cfg.DATA_DIR)
     cfg.ensure_dirs()
+    self_created = True
 
     import hgd.core.db as db
-    db.DB_PATH = cfg.DB_PATH
     db.init_db()
 
     from hgd.ui.main_window import MainWindow

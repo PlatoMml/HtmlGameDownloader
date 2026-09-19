@@ -28,10 +28,24 @@ def _app_root() -> Path:
 
 
 ROOT = _app_root()
+
+
+def _data_root() -> Path:
+    """数据目录。
+
+    可用环境变量 HGD_DATA_DIR 覆盖 —— 测试与多实例场景靠它隔离，
+    避免测试写坏用户的真实游戏库（曾发生：验收测试把临时目录写进 library.db）。
+    """
+    override = os.environ.get("HGD_DATA_DIR", "").strip()
+    if override:
+        return Path(override).expanduser().resolve()
+    return ROOT / "data"
+
+
+DATA_DIR = _data_root()
 ASSETS_DIR = ROOT / "assets"
 RUFFLE_DIR = ASSETS_DIR / "ruffle"
 SKILL_DIR = ROOT / "skill"
-DATA_DIR = ROOT / "data"
 DB_PATH = DATA_DIR / "library.db"
 CONFIG_PATH = DATA_DIR / "config.json"
 

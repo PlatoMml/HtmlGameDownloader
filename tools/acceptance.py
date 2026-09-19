@@ -13,6 +13,12 @@ import tempfile
 import time
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+# 关键：把数据目录指向临时位置，避免验收测试污染用户的真实游戏库。
+# 必须在本项目任何模块 import config 之前设置。
+_SANDBOX = tempfile.mkdtemp(prefix="hgd_acceptance_")
+os.environ["HGD_DATA_DIR"] = _SANDBOX
+
 os.environ["QTWEBENGINE_CHROMIUM_FLAGS"] = (
     "--no-sandbox --enable-unsafe-swiftshader --use-gl=angle --use-angle=swiftshader "
     "--autoplay-policy=no-user-gesture-required --log-level=3"
@@ -401,6 +407,7 @@ def test_extra():
 def main() -> int:
     print("网页游戏下载器 — 全量验收")
     print(f"时间: {time.strftime('%Y-%m-%d %H:%M:%S')}")
+    print(f"数据沙箱: {_SANDBOX}  (不会影响你的真实游戏库)")
 
     for fn in (test_identify, test_name_editable, test_custom_dir, test_favorites,
                test_scan, test_player, test_mcp, test_extra):
@@ -411,6 +418,12 @@ def main() -> int:
             print(f"  [ERROR] {fn.__name__}: {type(e).__name__}: {e}")
             traceback.print_exc()
             RESULTS.append(("?", fn.__name__, False, f"异常 {e}"))
+
+    # 清理沙箱（含验收过程中下载的游戏文件）
+    try:
+        shutil.rmtree(_SANDBOX, ignore_errors=True)
+    except Exception:
+        pass
 
     sec("汇总")
     passed = sum(1 for r in RESULTS if r[2])

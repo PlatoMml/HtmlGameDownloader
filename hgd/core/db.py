@@ -146,3 +146,34 @@ def touch_played(gid: int) -> None:
             (time.time(), gid),
         )
         conn.commit()
+
+
+# ---------------------------------------------------------------- 有效性
+
+def is_available(g: Game) -> bool:
+    """游戏文件是否还在磁盘上。
+
+    记录失效的常见原因：用户手动删了目录、游戏放在移动硬盘/U盘已拔出、
+    网络路径断开、或目录被改名。
+    """
+    p = (g.local_path or "").strip()
+    if not p:
+        return False
+    return os.path.exists(p)
+
+
+def find_missing() -> List[Game]:
+    """列出所有本地文件已不存在的记录。"""
+    return [g for g in list_games() if not is_available(g)]
+
+
+def prune_missing() -> int:
+    """删除所有失效记录，返回删除条数。"""
+    missing = find_missing()
+    if not missing:
+        return 0
+    with connect() as conn:
+        conn.executemany("DELETE FROM games WHERE id=?",
+                         [(g.id,) for g in missing])
+        conn.commit()
+    return len(missing)

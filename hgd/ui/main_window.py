@@ -23,7 +23,7 @@ from PySide6.QtWidgets import (
 from ..config import config
 from ..core.db import (
     add_game, categories, get_game, init_db, list_games, rename_category,
-    update_game, delete_game,
+    update_game, delete_game, is_available, find_missing, prune_missing,
 )
 from ..core.downloader import GameDownloader
 from ..core.identifier import dir_size, scan_directory
@@ -254,6 +254,11 @@ class MainWindow(QMainWindow):
         btn_open.setStyleSheet(button_style(primary=False))
         btn_open.clicked.connect(lambda: self._open_folder(self.tree_lib))
         top.addWidget(btn_open)
+        self.btn_clean = QPushButton("清理失效记录")
+        self.btn_clean.setStyleSheet(button_style(primary=False))
+        self.btn_clean.setToolTip("移除本地文件已不存在的游戏记录")
+        self.btn_clean.clicked.connect(self._clean_missing)
+        top.addWidget(self.btn_clean)
         lay.addLayout(top)
 
         self.tree_lib = self._make_game_tree()
@@ -573,13 +578,21 @@ class MainWindow(QMainWindow):
         tree.clear()
         for g in games:
             size_mb = g.size / 1024 / 1024 if g.size else 0.0
+            exists = is_available(g)
+            label = g.name if exists else f"{g.name}（文件已丢失）"
             node = QTreeWidgetItem([
-                g.name,
+                label,
                 {"unity": "Unity", "flash": "Flash", "html": "HTML5"}.get(g.engine, g.engine or "-"),
                 g.category, f"{size_mb:.1f} MB" if size_mb else "-",
                 g.source_url or "本地",
             ])
             node.setData(0, Qt.UserRole, g.id)
+            if not exists:
+                # 失效记录用灰色 + 提示，避免用户以为游戏还能打开
+                from PySide6.QtGui import QColor, QBrush
+                for col in range(5):
+                    node.setForeground(col, QBrush(QColor("#6b7280")))
+                node.setToolTip(0, f"文件不存在：{g.local_path}\n右键可移除该记录")
             tree.addTopLevelItem(node)
 
     def _refresh_library(self) -> None:
@@ -617,7 +630,18 @@ class MainWindow(QMainWindow):
 
     def _play(self, g: Game) -> None:
         if not g.local_path or not os.path.exists(g.local_path):
-            QMessageBox.warning(self, "找不到游戏", f"路径不存在：\n{g.local_path}")
+            box = QMessageBox(self)
+            box.setWindowTitle("找不到游戏")
+            box.setText(f"《{g.name}》的文件已不在原位置。")
+            box.setInformativeText(f"记录的路径：\n{g.local_path}\n\n"
+                                   "可能已被移动或删除。你可以移除这条记录。")
+            b_rm = box.addButton("移除记录", QMessageBox.DestructiveRole)
+            box.addButton("知道了", QMessageBox.RejectRole)
+            box.exec()
+            if box.clickedButton() is b_rm:
+                delete_game(g.id)
+                self._refresh_library()
+                self._refresh_favorites()
             return
         from ..core.db import touch_played
         p = GamePlayer(g)
@@ -646,12 +670,20 @@ class MainWindow(QMainWindow):
         menu.addAction("移动分类…", lambda: self._move_category(tree))
         menu.addAction("打开文件夹", lambda: self._open_folder_of(g))
         menu.addSeparator()
+        if not is_available(g):
+            menu.addAction("移除失效记录", lambda: self._remove_one(g))
         menu.addAction("删除记录…", lambda: self._delete_selected(tree))
         chosen = menu.exec(tree.viewport().mapToGlobal(pos))
         if chosen is act_fav:
             update_game(g.id, favorite=0 if g.favorite else 1)
             self._refresh_library()
             self._refresh_favorites()
+
+    def _remove_one(self, g: Game) -> None:
+        delete_game(g.id)
+        self._refresh_library()
+        self._refresh_favorites()
+        self.statusBar().showMessage(f"已移除记录：{g.name}")
 
     def _rename_game(self, tree=None) -> None:
         tree = tree or self.sender()
@@ -729,6 +761,29 @@ class MainWindow(QMainWindow):
             return
         self._refresh_library()
         self._refresh_favorites()
+
+    def _clean_missing(self) -> None:
+        """移除本地文件已不存在的记录。"""
+        missing = find_missing()
+        if not missing:
+            QMessageBox.information(self, "无需清理", "所有游戏文件都在原位。")
+            return
+        names = "\n".join(f"· {g.name}" for g in missing[:15])
+        more = f"\n… 等共 {len(missing)} 个" if len(missing) > 15 else ""
+        box = QMessageBox(self)
+        box.setWindowTitle("清理失效记录")
+        box.setText(f"有 {len(missing)} 个游戏的文件已不在原位置：")
+        box.setInformativeText(f"{names}{more}\n\n继续将只删除软件内的记录，"
+                               "不会碰磁盘上的任何文件。")
+        b_ok = box.addButton("移除这些记录", QMessageBox.DestructiveRole)
+        box.addButton("取消", QMessageBox.RejectRole)
+        box.exec()
+        if box.clickedButton() is not b_ok:
+            return
+        n = prune_missing()
+        self._refresh_library()
+        self._refresh_favorites()
+        self.statusBar().showMessage(f"已清理 {n} 条失效记录")
 
     def _new_category(self) -> None:
         name, ok = QInputDialog.getText(self, "新建分类", "分类名：")

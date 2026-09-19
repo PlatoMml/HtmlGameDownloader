@@ -318,7 +318,92 @@ class TestLauncherScripts(unittest.TestCase):
         self.assertIn("exec", txt)
 
 
+class TestDataIsolation(unittest.TestCase):
+    """回归：测试与工具绝不能写入用户的真实游戏库。
 
+    实测事故：验收测试调用 GameDownloader().download() 下载到临时目录，
+    随后删除临时文件，却在真实 library.db 里留下多条指向已删目录的记录，
+    用户打开软件看到"游戏库里显示了大量已经不存在的游戏"。
+
+    修复：数据目录支持 HGD_DATA_DIR 环境变量覆盖，测试脚本据此隔离。
+    """
+
+    def test_env_override_respected(self):
+        import subprocess
+        tmp = tempfile.mkdtemp(prefix="hgd_iso_")
+        code = (
+            "import sys; sys.path.insert(0, r'%s');"
+            "from hgd.config import DATA_DIR, DB_PATH;"
+            "print(str(DATA_DIR)); print(str(DB_PATH))"
+            % os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        )
+        env = dict(os.environ)
+        env["HGD_DATA_DIR"] = tmp
+        out = subprocess.run([sys.executable, "-c", code], capture_output=True,
+                             text=True, env=env, timeout=60)
+        lines = [x for x in out.stdout.strip().splitlines() if x.strip()]
+        self.assertTrue(lines, f"无输出: {out.stderr[-300:]}")
+        self.assertIn(os.path.basename(tmp), lines[0],
+                      f"DATA_DIR 未遵循 HGD_DATA_DIR: {lines[0]}")
+        self.assertIn(os.path.basename(tmp), lines[1],
+                      f"DB_PATH 未遵循 HGD_DATA_DIR: {lines[1]}")
+        shutil.rmtree(tmp, ignore_errors=True)
+
+    def test_test_scripts_declare_isolation(self):
+        """会写库的工具脚本必须声明数据隔离。"""
+        root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        for name in ("acceptance.py", "test_ui.py", "test_gui.py"):
+            p = os.path.join(root, "tools", name)
+            if not os.path.exists(p):
+                continue
+            src = open(p, encoding="utf-8").read()
+            self.assertIn("HGD_DATA_DIR", src,
+                          f"tools/{name} 未隔离数据目录，可能污染用户游戏库")
+
+
+class TestMissingRecords(unittest.TestCase):
+    """失效记录（本地文件已不在磁盘）的识别与清理。"""
+
+    def setUp(self):
+        from pathlib import Path
+        from hgd.core import db
+        self.db = db
+        self.tmp = tempfile.mkdtemp(prefix="hgd_missing_")
+        self.orig = db.DB_PATH
+        db.DB_PATH = Path(self.tmp) / "t.db"
+        db.init_db()
+
+    def tearDown(self):
+        self.db.DB_PATH = self.orig
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def test_is_available(self):
+        from hgd.models import Game
+        exist = os.path.join(self.tmp, "exist")
+        os.makedirs(exist)
+        g_ok = self.db.add_game(Game(name="在", local_path=exist))
+        g_bad = self.db.add_game(Game(name="不在", local_path=os.path.join(self.tmp, "gone")))
+        g_empty = self.db.add_game(Game(name="空路径", local_path=""))
+        self.assertTrue(self.db.is_available(self.db.get_game(g_ok)))
+        self.assertFalse(self.db.is_available(self.db.get_game(g_bad)))
+        self.assertFalse(self.db.is_available(self.db.get_game(g_empty)))
+
+    def test_find_and_prune_missing(self):
+        from hgd.models import Game
+        exist = os.path.join(self.tmp, "ok")
+        os.makedirs(exist)
+        self.db.add_game(Game(name="正常", local_path=exist))
+        self.db.add_game(Game(name="丢失1", local_path=os.path.join(self.tmp, "x1")))
+        self.db.add_game(Game(name="丢失2", local_path=os.path.join(self.tmp, "x2")))
+        missing = self.db.find_missing()
+        self.assertEqual(len(missing), 2, [g.name for g in missing])
+        self.assertEqual(self.db.prune_missing(), 2)
+        self.assertEqual(len(self.db.list_games()), 1)
+        self.assertEqual(self.db.list_games()[0].name, "正常")
+        self.assertEqual(self.db.prune_missing(), 0, "清理应幂等")
+
+
+class TestCleanName(unittest.TestCase):
     """站点标题清洗（实测样本）。"""
 
     def _c(self, s):

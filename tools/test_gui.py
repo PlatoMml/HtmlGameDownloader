@@ -7,8 +7,12 @@ from __future__ import annotations
 import json
 import os
 import sys
+import tempfile
 import time
 
+# 隔离数据目录：测试绝不写入用户的真实游戏库
+os.environ.setdefault("HGD_DATA_DIR",
+                      os.path.join(tempfile.gettempdir(), "hgd_testdata_" + str(os.getpid())))
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 os.environ["QTWEBENGINE_CHROMIUM_FLAGS"] = (
     "--no-sandbox --enable-unsafe-swiftshader --use-gl=angle --use-angle=swiftshader "
