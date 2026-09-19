@@ -13,6 +13,7 @@ from typing import List, Optional
 from PySide6.QtCore import Qt, QThread, Signal, QTimer
 from PySide6.QtGui import QFont
 from PySide6.QtWidgets import (
+    QProgressDialog,
     QAbstractItemView, QComboBox, QFileDialog, QFrame, QHBoxLayout, QHeaderView,
     QInputDialog, QLabel, QLineEdit, QListWidget, QListWidgetItem, QMainWindow,
     QMenu, QMessageBox, QProgressBar, QPushButton, QSplitter, QTabWidget,
@@ -72,6 +73,40 @@ class _IdentifyWorker(QThread):
         except Exception as e:
             from ..models import IdentifyResult
             self.done.emit(IdentifyResult(False, url=self.url, message=str(e)))
+
+
+class _PackageWorker(QThread):
+    """后台打包，避免大游戏压缩时界面卡死。"""
+    progress = Signal(str, int)
+    done = Signal(bool, str, object)
+
+    def __init__(self, game, out_dir: str, level: int = 5):
+        super().__init__()
+        self.game = game
+        self.out_dir = out_dir
+        self.level = level
+        self._cancelled = False
+
+    def cancel(self):
+        self._cancelled = True
+        try:
+            self.terminate()
+        except Exception:
+            pass
+
+    def run(self):
+        try:
+            from ..core.packager import package_game
+            ok, msg, path = package_game(
+                self.game, out_dir=self.out_dir, level=self.level,
+                progress=lambda m, p: self.progress.emit(m, p),
+            )
+            if self._cancelled:
+                self.done.emit(False, "已取消打包", None)
+            else:
+                self.done.emit(ok, msg, path)
+        except Exception as e:
+            self.done.emit(False, f"打包异常：{type(e).__name__}: {e}", None)
 
 
 class _ScanWorker(QThread):
@@ -255,6 +290,11 @@ class MainWindow(QMainWindow):
         btn_open.setStyleSheet(button_style(primary=False))
         btn_open.clicked.connect(lambda: self._open_folder(self.tree_lib))
         top.addWidget(btn_open)
+        btn_pack = QPushButton("打包为 7z")
+        btn_pack.setStyleSheet(button_style(primary=False))
+        btn_pack.setToolTip("把选中的游戏导出成压缩包，方便拷贝到别的电脑或在网站上部署")
+        btn_pack.clicked.connect(lambda: self._package_selected(self.tree_lib))
+        top.addWidget(btn_pack)
         self.btn_clean = QPushButton("清理失效记录")
         self.btn_clean.setStyleSheet(button_style(primary=False))
         self.btn_clean.setToolTip("移除本地文件已不存在的游戏记录")
@@ -486,7 +526,8 @@ class MainWindow(QMainWindow):
 
     def _on_progress(self, p: DownloadProgress) -> None:
         phase = {"analyse": "识别", "download": "下载入口", "mirror": "抓取资源",
-                 "package": "打包", "done": "完成", "error": "出错"}.get(p.phase, p.phase)
+                 "package": "打包", "clean": "清理", "done": "完成",
+                 "error": "出错"}.get(p.phase, p.phase)
         msg = p.message or p.current
         if p.done:
             self.lbl_status.setText(f"{phase}：{msg}（已处理 {p.done} 个）")
@@ -690,6 +731,9 @@ class MainWindow(QMainWindow):
         menu.addAction("移动分类…", lambda: self._move_category(tree))
         menu.addAction("打开文件夹", lambda: self._open_folder_of(g))
         menu.addSeparator()
+        menu.addAction("打包为 7z…", lambda: self._package_game(g))
+        menu.addAction("清理广告代码", lambda: self._clean_ads_of(g))
+        menu.addSeparator()
         if not is_available(g):
             menu.addAction("移除失效记录", lambda: self._remove_one(g))
         menu.addAction("删除记录…", lambda: self._delete_selected(tree))
@@ -698,6 +742,114 @@ class MainWindow(QMainWindow):
             update_game(g.id, favorite=0 if g.favorite else 1)
             self._refresh_library()
             self._refresh_favorites()
+
+    # -------------------------------------------------- 打包 / 广告清理
+
+    def _package_selected(self, tree: QTreeWidget) -> None:
+        g = self._selected_game(tree)
+        if not g:
+            QMessageBox.information(self, "提示", "请先在列表里选中一个游戏")
+            return
+        self._package_game(g)
+
+    def _package_game(self, g: Game) -> None:
+        """把游戏打包成 7z（后台线程，带进度）。"""
+        from ..core.packager import estimate_size, find_7z
+        if not os.path.isdir(g.local_path or ""):
+            QMessageBox.warning(self, "无法打包", "游戏目录不存在。")
+            return
+        if not find_7z():
+            QMessageBox.warning(
+                self, "缺少压缩工具",
+                "找不到 7z 压缩工具。\n\n"
+                "请确认 assets/7z/7zr.exe 存在，或安装 7-Zip。")
+            return
+
+        raw_mb = estimate_size(g) / 1024 / 1024
+        out_dir = QFileDialog.getExistingDirectory(
+            self, "选择压缩包保存位置",
+            os.path.dirname(os.path.abspath(g.local_path)))
+        if not out_dir:
+            return
+
+        self.statusBar().showMessage(f"正在打包《{g.name}》（原始 {raw_mb:.1f} MB）…")
+        dlg = QProgressDialog("准备中…", "取消", 0, 100, self)
+        dlg.setWindowTitle("打包为 7z")
+        dlg.setWindowModality(Qt.WindowModal)
+        dlg.setMinimumWidth(420)
+        dlg.setMinimumDuration(0)
+
+        worker = _PackageWorker(g, out_dir)
+        worker.progress.connect(lambda msg, pct: (dlg.setLabelText(msg), dlg.setValue(pct)))
+        worker.done.connect(lambda ok, msg, path: self._packaged(dlg, ok, msg, path))
+        dlg.canceled.connect(worker.cancel)
+        worker.start()
+        self._workers.append(worker)
+
+    def _packaged(self, dlg, ok: bool, msg: str, path) -> None:
+        try:
+            dlg.close()
+        except Exception:
+            pass
+        if ok:
+            self.statusBar().showMessage(f"打包完成：{path}", 10000)
+            box = QMessageBox(self)
+            box.setWindowTitle("打包完成")
+            box.setText("游戏已打包完成。")
+            box.setInformativeText(msg)
+            b_open = box.addButton("打开所在文件夹", QMessageBox.ActionRole)
+            box.addButton("好", QMessageBox.AcceptRole)
+            box.exec()
+            if box.clickedButton() is b_open and path:
+                try:
+                    os.startfile(os.path.dirname(os.path.abspath(path)))
+                except Exception:
+                    pass
+        else:
+            self.statusBar().showMessage("打包失败", 8000)
+            QMessageBox.warning(self, "打包失败", msg)
+
+    def _clean_ads_of(self, g: Game) -> None:
+        """清理选中游戏里的广告/统计代码（二次确认）。"""
+        from ..core import adclean
+        residue = adclean.scan_ad_residue(g.local_path)
+        box = QMessageBox(self)
+        box.setWindowTitle("清理广告代码")
+        if not residue:
+            box.setText(f"《{g.name}》未发现广告或统计代码。")
+            box.setInformativeText("可以选择「仍然执行一次清理」以处理潜在残留。")
+            b_go = box.addButton("仍然清理", QMessageBox.ActionRole)
+            box.addButton("取消", QMessageBox.RejectRole)
+            box.exec()
+            if box.clickedButton() is not b_go:
+                return
+        else:
+            files = "\n".join(f"· {h['file']}" for h in residue[:8])
+            more = f"\n… 共 {len(residue)} 个文件" if len(residue) > 8 else ""
+            box.setText(f"《{g.name}》中发现 {len(residue)} 个含广告/统计代码的页面：")
+            box.setInformativeText(
+                f"{files}{more}\n\n"
+                "将移除广告脚本、广告位与统计埋点。\n"
+                "只改 HTML 页面，不会触碰游戏资源与引擎文件。")
+            b_go = box.addButton("执行清理", QMessageBox.ActionRole)
+            box.addButton("取消", QMessageBox.RejectRole)
+            box.exec()
+            if box.clickedButton() is not b_go:
+                return
+
+        st = adclean.clean_game_dir(g.local_path)
+        after = adclean.scan_ad_residue(g.local_path)
+        if st.get("files"):
+            self.statusBar().showMessage(f"已清理 {st['files']} 个页面", 8000)
+            QMessageBox.information(
+                self, "清理完成",
+                f"已处理 {st['files']} 个页面\n"
+                f"移除广告脚本 {st['scripts']} 处、广告位 {st['containers']} 个、"
+                f"中和广告调用 {st['calls']} 处、统计埋点 {st['tracking']} 处。\n\n"
+                + ("清理后无残留。" if not after else
+                   f"仍有 {len(after)} 个文件含相关特征（多为只读遥测，不影响使用）。"))
+        else:
+            QMessageBox.information(self, "清理完成", "没有需要清理的内容。")
 
     def _remove_one(self, g: Game) -> None:
         delete_game(g.id)

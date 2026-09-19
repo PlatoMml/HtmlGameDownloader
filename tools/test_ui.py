@@ -174,7 +174,7 @@ def main() -> int:
         j = requests.post(f"http://127.0.0.1:{p}",
                           json={"jsonrpc": "2.0", "id": 1, "method": "tools/list"},
                           timeout=20).json()
-        check("MCP 启动并响应", len(j["result"]["tools"]) == 7)
+        check("MCP 启动并响应", len(j["result"]["tools"]) == 13, f"{len(j['result']['tools'])} 个")
         m.stop()
         check("MCP 可停止", m._httpd is None)
     except Exception as e:

@@ -316,7 +316,12 @@ def test_mcp():
     r = call("initialize")
     rec("7", "initialize 握手", r["result"]["protocolVersion"].startswith("2024"))
     tools = call("tools/list")["result"]["tools"]
-    rec("7", "工具列表", len(tools) == 7, f"{len(tools)} 个")
+    rec("7", "工具列表", len(tools) == 13, f"{len(tools)} 个")
+    names = [t["name"] for t in tools]
+    rec("7", "含管理类工具",
+        all(k in names for k in ("get_game", "update_game", "delete_game",
+                                 "clean_ads", "package_game")),
+        f"{[n for n in names if n in ('get_game','update_game','delete_game','clean_ads','package_game')]}")
     rec("7", "ping", call("ping")["result"] == {})
 
     d = json.loads(call("tools/call", {"name": "identify_url",

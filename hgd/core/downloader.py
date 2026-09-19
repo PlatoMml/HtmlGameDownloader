@@ -249,6 +249,17 @@ class GameDownloader:
         stats = dl.mirror(info.entry_url, entry_local, max_depth=max_depth)
         self._emit("mirror", f"资源 {stats['files']} 个", done=stats["files"])
 
+        # 3.5) 清理广告与统计代码（只改 HTML，不动 JS/二进制）
+        if config.get("clean_ads", True):
+            try:
+                from . import adclean
+                ad_stats = adclean.clean_game_dir(folder)
+                if ad_stats.get("files"):
+                    self._emit("clean",
+                               f"已清理广告/统计代码（{ad_stats['files']} 个页面）")
+            except Exception:
+                pass    # 清理失败不影响下载结果
+
         # 4) 生成播放入口
         self._emit("package", "生成播放入口")
         # 比例优先用页面声明的 targetAspect（站点注入的自适应脚本最权威），

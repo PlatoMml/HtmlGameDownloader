@@ -39,6 +39,8 @@ python -m hgd
 | **目录识别** | 扫描本地目录，自动发现并登记其中已有的多个游戏 |
 | **游戏播放** | 内置播放器，打开即网页全屏，音量拖动条（默认 30%）、一键静音、全屏（ESC 退出） |
 | **存档与重玩** | 游戏存档自动持久保存、每个游戏独立隔离；「重玩」按钮二次确认后从全新存档开始 |
+| **打包分发** | 一键导出 7z：含播放页、启动脚本与说明文档，可拷到别的电脑玩，也可直接部署到网站 |
+| **广告清理** | 自动移除页面里的广告脚本、广告位与统计埋点（只改 HTML，不动游戏资源） |
 | **MCP 接入** | 内置 MCP 服务，外部 Agent 可接手疑难游戏下载，端口可自定义 |
 
 ### 服务端渲染的抓取引擎
@@ -91,15 +93,27 @@ python -m hgd
 
 在「设置」页启用，端口可自定义（默认 8765）。启用后外部 Agent 可调用：
 
+**下载类**
+
 | 工具 | 用途 |
 |---|---|
 | `identify_url` | 识别网址 → 引擎 / 名称 / 入口 |
 | `download_game` | 下载（支持手动指定 `entry_url` 绕过自动识别） |
 | `fetch_text` | 抓页面源码分析（支持 `referer`） |
 | `extract_refs` | 提取页面所有资源地址，支持关键词过滤 |
-| `list_games` | 查看已下载 / 收藏 |
-| `scan_directory` | 扫描本地目录批量登记 |
 | `set_proxy` | 设置代理 |
+
+**管理类**（Agent 可直接管理游戏库）
+
+| 工具 | 用途 |
+|---|---|
+| `list_games` / `get_game` | 列出游戏、查单个详情（含存档占用、广告残留数） |
+| `update_game` | 重命名、改分类、收藏/取消、写备注、修正路径 |
+| `delete_game` | 删除条目（可选连同文件） |
+| `scan_directory` | 扫描本地目录批量登记 |
+| `clean_ads` | 清理广告/统计代码（`dry_run` 可预览） |
+| `package_game` | 打包成 7z |
+| `list_pending_saves` | 查看存档占用 |
 
 调用示例：
 
@@ -116,6 +130,32 @@ curl -s http://127.0.0.1:8765 \
 
 ---
 
+## 打包分发
+
+在「游戏库」里选中游戏 → 点「打包为 7z」（或右键菜单）。
+压缩包内含游戏本体、播放页、启动脚本与说明文档。
+
+- **拷到别的电脑玩**：解压后双击 `启动游戏.bat`（Linux/macOS 用 `./start-game.sh`）。
+  脚本会起一个本地 HTTP 服务再打开浏览器 —— 直接双击 `index.html` 时
+  Chrome/Edge 会因安全策略拒绝加载 Unity 等引擎的资源。
+- **部署到网站**：把包内容原样上传到网站目录，访问 `index.html` 即可在线游玩，
+  无需任何额外配置（游戏在网站里本来就通过 HTTP 提供）。
+
+压缩工具优先用系统已装的 7-Zip，找不到则用内置的 `assets/7z/7zr.exe`。
+
+## 广告清理
+
+下载完成后会自动清理页面里的广告与统计代码，也可在右键菜单手动对已有游戏执行。
+
+清理范围：广告/统计 `<script>` 标签、明确的广告位容器、
+内联广告调用（`adsbygoogle.push` / `adBreak` 等）、统计埋点。
+
+**只改 HTML 页面**，不碰 JS / CSS / 二进制资源 —— 实测 Unity 的 `framework.js`
+含 `adsbygoogle_present: !!window.adsbygoogle` 这类只读遥测，改写会破坏引擎文件。
+清理后还会下发空的 `window.adsbygoogle` 兜底，避免残留代码抛 `ReferenceError`。
+
+可在设置里关闭 `clean_ads`。
+
 ## 项目结构
 
 ```
@@ -129,6 +169,8 @@ hgd/
     identifier.py      网址识别 / 目录扫描识别
     site_plugins.py    站点特例插件（4399 / 7k7k / 通用）
     downloader.py      下载编排 + 播放入口生成
+    adclean.py         广告/统计代码清理
+    packager.py        7z 打包（含启动脚本与说明文档）
     db.py              SQLite 游戏库 + 收藏夹
   ui/
     main_window.py     主窗口（下载 / 游戏库 / 收藏夹 / 设置）
@@ -159,6 +201,12 @@ python tools/test_ui.py
 
 # 存档与重玩（40 项：跨会话保留 / 游戏间隔离 / 重玩清档 / 二次确认）
 python tools/test_saves.py
+
+# 广告清理（20 项：清理效果 + 不误伤游戏逻辑）
+python tests/test_adclean.py
+
+# 打包与 MCP 管理工具（23 项：压缩包内容 / 解压可玩 / Agent 管理能力）
+python tests/test_packager.py
 
 # 需求逐条验收（66 项，需要联网与已下载的测试游戏）
 python tools/acceptance.py

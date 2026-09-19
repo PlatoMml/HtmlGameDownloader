@@ -165,15 +165,60 @@ URL 带 query 时（`x.js?v=2`）会落盘为 `x__v=2.js` 避免覆盖。
 
 ## 5. MCP 工具速查
 
+### 下载类
+
 | 工具 | 用途 |
 |---|---|
 | `identify_url` | 识别网址 → 引擎 / 名称 / 入口 |
 | `download_game` | 下载（可手动指定 `entry_url` 绕过自动识别） |
 | `fetch_text` | 抓页面源码分析（支持 `referer`） |
 | `extract_refs` | 提取页面所有资源地址（含 JS 拼接还原），支持关键词过滤 |
-| `list_games` | 查看已下载 / 收藏 |
-| `scan_directory` | 扫描本地目录批量登记游戏 |
 | `set_proxy` | 设置代理 |
+
+### 管理类
+
+| 工具 | 用途 |
+|---|---|
+| `list_games` | 列出游戏库 / 收藏夹 |
+| `get_game` | 查单个游戏详情（路径、引擎、分类、存档占用、广告残留数） |
+| `update_game` | 重命名、改分类、收藏/取消、写备注、修正路径 |
+| `delete_game` | 删除条目（可选连同文件） |
+| `scan_directory` | 扫描本地目录批量登记游戏 |
+| `clean_ads` | 清理页面里的广告 / 统计代码（支持 `dry_run` 预览） |
+| `package_game` | 打包成 7z（便于拷贝分发或部署到网站） |
+| `list_pending_saves` | 查看各游戏存档占用与待清理的旧代际 |
+
+### 广告清理说明
+
+`clean_ads` 只改写 **HTML 页面**，不动 JS / CSS / 二进制：
+
+- **移除**：广告与统计的 `<script>` 标签（AdSense、百度统计、CNZZ、4399 广告接口等）
+- **移除**：明确的广告位容器（`id`/`class` 含 `ad_slot`、`advert`、`adsense` 等）
+- **中和**：内联广告调用（`adsbygoogle.push`、`adBreak`、`adConfig`），
+  并下发 `window.adsbygoogle = window.adsbygoogle || []` 空数组兜底，
+  避免残留代码抛 `ReferenceError`
+- **移除**：统计埋点（透明 gif、埋点 script/link）
+
+**为什么不动 JS**：实测 Unity 的 `framework.js` 里有
+`adsbygoogle_present: !!window.adsbygoogle` 这类**只读遥测**，
+既不加广告也不发请求；正则改写 JS 只会破坏引擎文件。
+广告注入几乎总在 HTML 层，清 HTML 就够。
+
+下载流程默认已自动清理（设置里可关 `clean_ads`）。
+
+### 打包说明
+
+`package_game` 产出的 7z 内含：
+
+- 游戏本体（保持原目录结构）
+- `index.html` 播放页
+- `启动游戏.bat` / `start-game.sh` + `_serve.py` —— 起本地 HTTP 服务再打开，
+  避开浏览器对 `file://` 的 CORS 限制
+- `使用说明.txt` —— 游玩方法与**网站部署**说明
+
+站点部署：把包内容原样上传到网站目录即可（游戏在网站里本就通过 HTTP 提供）。
+
+压缩工具优先用系统 7-Zip，找不到则用内置 `assets/7z/7zr.exe`。
 
 调用示例（JSON-RPC over HTTP）：
 

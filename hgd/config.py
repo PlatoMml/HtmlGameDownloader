@@ -79,6 +79,7 @@ _DEFAULTS = {
     "retries": 3,
     "concurrency": 6,
     "lazy_fill": True,           # 运行时懒补漏（继承参考仓库最有价值的设计）
+    "clean_ads": True,           # 下载后清理页面里的广告/统计代码
     "last_scan_dir": "",
 }
 

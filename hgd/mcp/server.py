@@ -71,6 +71,32 @@ TOOLS = [
           {"directory": {"type": "string"}}, ["directory"]),
     _tool("set_proxy", "设置下载代理（疑难站点可能需要）。",
           {"proxy": {"type": "string", "description": "如 http://127.0.0.1:10808，留空表示直连"}}, []),
+    _tool("get_game", "按 id 或名称查单个游戏的详细信息（路径、引擎、分类、是否收藏、存档占用、文件是否存在）。",
+          {"id": {"type": "integer", "description": "游戏 id"},
+           "name": {"type": "string", "description": "游戏名（支持部分匹配）"}}, []),
+    _tool("update_game", "管理游戏条目：重命名、改分类、加入/取消收藏、写备注、修正本地路径。",
+          {"id": {"type": "integer"}, "name": {"type": "string"},
+           "new_name": {"type": "string", "description": "新游戏名"},
+           "category": {"type": "string", "description": "分类"},
+           "favorite": {"type": "boolean", "description": "是否收藏"},
+           "note": {"type": "string", "description": "备注"},
+           "local_path": {"type": "string", "description": "修正本地路径（游戏被移动过时用）"}},
+          ["id"]),
+    _tool("delete_game", "删除游戏条目，可选同时删除已下载的文件。",
+          {"id": {"type": "integer"},
+           "delete_files": {"type": "boolean", "description": "是否连同磁盘文件一起删除，默认 false"}},
+          ["id"]),
+    _tool("clean_ads", "清理游戏页面里的广告与统计代码（AdSense/百度统计/广告位等）。"
+                       "只改 HTML，不触碰游戏资源与引擎文件。",
+          {"id": {"type": "integer"}, "dry_run": {"type": "boolean", "description": "只扫描不修改，默认 false"}},
+          ["id"]),
+    _tool("package_game", "把游戏打包成 7z 压缩包，便于拷贝到别的电脑游玩或部署到网站。"
+                          "包内含播放页、启动脚本与使用说明。",
+          {"id": {"type": "integer"},
+           "out_dir": {"type": "string", "description": "压缩包保存目录，留空则用默认 packages 目录"},
+           "level": {"type": "integer", "description": "压缩级别 0-9，默认 5"}},
+          ["id"]),
+    _tool("list_pending_saves", "查看各游戏的存档占用与待清理的旧存档代际。", {}, []),
 ]
 
 
@@ -160,6 +186,180 @@ def _t_proxy(args: Dict) -> Dict:
     return {"ok": True, "proxy": config.get("proxy")}
 
 
+def _resolve_game(args: Dict):
+    """按 id 或名称定位游戏。返回 (Game, 错误信息)。"""
+    gid = args.get("id")
+    if gid is not None:
+        try:
+            g = db.get_game(int(gid))
+        except Exception:
+            g = None
+        if not g:
+            return None, f"找不到 id={gid} 的游戏"
+        return g, ""
+    name = (args.get("name") or "").strip()
+    if name:
+        hits = db.list_games(keyword=name)
+        exact = [h for h in hits if h.name == name]
+        if exact:
+            return exact[0], ""
+        if len(hits) == 1:
+            return hits[0], ""
+        if not hits:
+            return None, f"找不到名称含「{name}」的游戏"
+        return None, (f"「{name}」匹配到 {len(hits)} 个游戏，请用 id 指定："
+                      + ", ".join(f"{h.id}={h.name}" for h in hits[:8]))
+    return None, "请提供 id 或 name"
+
+
+def _game_brief(g) -> Dict:
+    from ..core import saves as _saves
+    try:
+        save_bytes = _saves.all_save_size()
+    except Exception:
+        save_bytes = 0
+    return {
+        "id": g.id, "name": g.name, "engine": g.engine, "category": g.category,
+        "favorite": bool(g.favorite), "local_path": g.local_path,
+        "entry_file": g.entry_file, "size_bytes": g.size,
+        "exists": db.is_available(g), "source_url": g.source_url,
+        "note": g.note, "play_count": g.play_count,
+    }
+
+
+def _t_get_game(args: Dict) -> Dict:
+    g, err = _resolve_game(args)
+    if not g:
+        return {"ok": False, "error": err}
+    info = _game_brief(g)
+
+    # 附加存档与广告残留信息，便于 Agent 决策
+    try:
+        from ..core import saves
+        info["save_bytes"] = saves.save_size(g)
+        info["save_exists"] = saves.save_exists(g)
+        info["save_generation"] = saves.current_gen(g)
+    except Exception:
+        pass
+    try:
+        from ..core import adclean
+        if db.is_available(g):
+            info["ad_residue_files"] = len(adclean.scan_ad_residue(g.local_path))
+    except Exception:
+        pass
+    return {"ok": True, "game": info}
+
+
+def _t_update_game(args: Dict) -> Dict:
+    g, err = _resolve_game(args)
+    if not g:
+        return {"ok": False, "error": err}
+
+    fields: Dict = {}
+    if args.get("new_name"):
+        fields["name"] = str(args["new_name"]).strip()
+    if args.get("category") is not None:
+        fields["category"] = str(args["category"]).strip() or "未分类"
+    if args.get("favorite") is not None:
+        fields["favorite"] = 1 if args["favorite"] else 0
+    if args.get("note") is not None:
+        fields["note"] = str(args["note"])
+    if args.get("local_path"):
+        fields["local_path"] = str(args["local_path"]).strip()
+    if not fields:
+        return {"ok": False, "error": "没有要修改的字段"}
+
+    db.update_game(g.id, **fields)
+    after = db.get_game(g.id)
+    return {"ok": True, "game": _game_brief(after), "updated": list(fields)}
+
+
+def _t_delete_game(args: Dict) -> Dict:
+    g, err = _resolve_game(args)
+    if not g:
+        return {"ok": False, "error": err}
+    delete_files = bool(args.get("delete_files"))
+    name, path = g.name, g.local_path
+    db.delete_game(g.id, also_files=delete_files)
+    return {"ok": True, "deleted": {"id": g.id, "name": name, "path": path},
+            "files_deleted": delete_files}
+
+
+def _t_clean_ads(args: Dict) -> Dict:
+    g, err = _resolve_game(args)
+    if not g:
+        return {"ok": False, "error": err}
+    if not db.is_available(g):
+        return {"ok": False, "error": f"游戏目录不存在：{g.local_path}"}
+
+    from ..core import adclean
+    before = adclean.scan_ad_residue(g.local_path)
+    if args.get("dry_run"):
+        return {"ok": True, "dry_run": True, "found": len(before),
+                "files": before[:30]}
+
+    stats = adclean.clean_game_dir(g.local_path)
+    after = adclean.scan_ad_residue(g.local_path)
+    return {
+        "ok": True, "game": g.name,
+        "cleaned_files": stats.get("files", 0),
+        "removed_scripts": stats.get("scripts", 0),
+        "removed_containers": stats.get("containers", 0),
+        "neutralized_calls": stats.get("calls", 0),
+        "removed_tracking": stats.get("tracking", 0),
+        "residue_before": len(before),
+        "residue_after": len(after),
+        "note": "只改写了 HTML 页面，游戏资源与引擎文件未改动",
+    }
+
+
+def _t_package_game(args: Dict) -> Dict:
+    g, err = _resolve_game(args)
+    if not g:
+        return {"ok": False, "error": err}
+    if not db.is_available(g):
+        return {"ok": False, "error": f"游戏目录不存在：{g.local_path}"}
+
+    from ..core import packager
+    if not packager.find_7z():
+        return {"ok": False, "error": "找不到 7z 压缩工具（assets/7z/7zr.exe 缺失）"}
+
+    level = int(args.get("level", 5) or 5)
+    level = max(0, min(9, level))
+    ok, msg, path = packager.package_game(
+        g, out_dir=args.get("out_dir") or None, level=level)
+    return {
+        "ok": bool(ok), "message": msg, "archive": path,
+        "size_bytes": os.path.getsize(path) if (ok and path and os.path.exists(path)) else 0,
+        "note": "包内含播放页、启动脚本与使用说明；可直接部署到网站",
+    }
+
+
+def _t_list_pending_saves(args: Dict) -> Dict:
+    from ..core import saves
+    from ..config import SAVES_DIR
+    out = []
+    if SAVES_DIR.exists():
+        for d in sorted(SAVES_DIR.iterdir()):
+            if not d.is_dir():
+                continue
+            size = 0
+            gens = []
+            for sub in d.iterdir():
+                if sub.is_dir():
+                    gens.append(sub.name)
+                    for root, _dd, fs in os.walk(sub):
+                        for f in fs:
+                            try:
+                                size += os.path.getsize(os.path.join(root, f))
+                            except OSError:
+                                pass
+            out.append({"store": d.name, "generations": sorted(gens),
+                        "bytes": size})
+    return {"ok": True, "count": len(out), "stores": out,
+            "total_bytes": saves.total_save_size()}
+
+
 HANDLERS: Dict[str, Callable[[Dict], Dict]] = {
     "identify_url": _t_identify,
     "download_game": _t_download,
@@ -168,6 +368,12 @@ HANDLERS: Dict[str, Callable[[Dict], Dict]] = {
     "list_games": _t_list,
     "scan_directory": _t_scan,
     "set_proxy": _t_proxy,
+    "get_game": _t_get_game,
+    "update_game": _t_update_game,
+    "delete_game": _t_delete_game,
+    "clean_ads": _t_clean_ads,
+    "package_game": _t_package_game,
+    "list_pending_saves": _t_list_pending_saves,
 }
 
 
